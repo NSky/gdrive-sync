@@ -5,9 +5,8 @@ Conflicts=gdrive-sync.service
 
 [Service]
 Type=oneshot
-ExecStart=%h/.local/bin/gdrive-initial-resync
+ExecStart=/usr/bin/gdrive-sync-resync
 TimeoutStartSec=1800
-Environment=PATH=/usr/local/bin:/usr/bin:/bin:%h/.local/bin
 
 [Install]
 WantedBy=default.target

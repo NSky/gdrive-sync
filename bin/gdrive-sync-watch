@@ -1,5 +1,5 @@
 #!/bin/bash
-# gdrive-watch - Monitor local changes and trigger immediate sync
+# gdrive-sync-watch - Monitor local changes and trigger immediate sync
 #
 # Part of linux-gdrive-sync
 # https://github.com/namastexlabs/linux-gdrive-sync
@@ -66,7 +66,7 @@ trigger_sync() {
 }
 
 cleanup() {
-    log "Stopping gdrive-watch..."
+    log "Stopping gdrive-sync-watch..."
     rm -f "$LOCK_FILE"
     # Kill inotifywait if running
     if [[ -n "${INOTIFY_PID:-}" ]]; then

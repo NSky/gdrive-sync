@@ -5,10 +5,9 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=%h/.local/bin/gdrive-watch
+ExecStart=/usr/bin/gdrive-sync-watch
 Restart=always
 RestartSec=10
-Environment="PATH=/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin:%h/.local/bin"
 
 [Install]
 WantedBy=default.target

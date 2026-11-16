@@ -1,6 +1,6 @@
-# linux-gdrive-sync
+# gdrive-sync
 
-**Turnkey bidirectional Google Drive sync for Linux with real-time local file watching.**
+**Bidirectional Google Drive sync for Linux with real-time local file watching.**
 
 A complete solution for keeping a local directory in sync with Google Drive using [rclone's bisync](https://rclone.org/bisync/). Features automatic conflict resolution, real-time monitoring of local changes, and robust error recovery.
 
@@ -18,24 +18,44 @@ A complete solution for keeping a local directory in sync with Google Drive usin
 - **Log rotation**: Keeps logs tidy with 7-day retention
 - **Systemd integration**: Runs as user services, starts on boot
 
-## Quick Start
+## Installation
+
+### Arch Linux
 
 ```bash
-# Clone the repository
-git clone https://github.com/namastexlabs/linux-gdrive-sync.git
-cd linux-gdrive-sync
-
-# Run the installer
-./install.sh
+git clone https://github.com/NSky/gdrive-sync.git
+cd gdrive-sync/packaging/arch
+makepkg -si
 ```
 
-The installer will:
-1. Check and install dependencies (rclone, inotify-tools, jq)
-2. Guide you through configuration
+### Other distributions (from source)
+
+Install the dependencies (`rclone`, `inotify-tools`, `jq`) with your package manager, then:
+
+```bash
+git clone https://github.com/NSky/gdrive-sync.git
+cd gdrive-sync
+sudo make install            # PREFIX=/usr by default
+```
+
+Installation puts the scripts in `/usr/bin` and the systemd **user** units in `/usr/lib/systemd/user`, so every user on the machine can use them. Nothing is enabled or started by the install, and upgrades never change whether the services are enabled or running.
+
+### Per-user setup
+
+Each user who wants to sync their Google Drive runs, as themselves (not root):
+
+```bash
+gdrive-sync-setup
+```
+
+The setup will:
+1. Check the dependencies (rclone, inotify-tools, jq)
+2. Guide you through configuration (`~/.config/gdrive-sync/config.env`)
 3. Set up your rclone Google Drive remote (if needed)
-4. Install scripts and systemd services
-5. Run the initial sync
-6. Start the sync services
+4. Optionally run the initial sync
+5. Optionally enable and start the sync services for your account
+
+Every user's services run under their own account with `systemctl --user`, using their own config, state and rclone remote.
 
 ## Prerequisites
 
@@ -43,8 +63,6 @@ The installer will:
 - **rclone** >= 1.58 (for bisync support)
 - **inotify-tools** (for file watching)
 - **jq** (for JSON status)
-
-The installer will attempt to install missing dependencies automatically.
 
 ## Architecture
 
@@ -61,7 +79,7 @@ The installer will attempt to install missing dependencies automatically.
 │                         Your Linux Machine                         │
 │                                                                     │
 │  ┌─────────────────┐   detects    ┌────────────────────────────┐  │
-│  │ Local Directory │◄────────────►│     gdrive-watch           │  │
+│  │ Local Directory │◄────────────►│     gdrive-sync-watch      │  │
 │  │   ~/gdrive      │   changes    │  (inotifywait daemon)      │  │
 │  └─────────────────┘              └────────────┬───────────────┘  │
 │                                                │                   │
@@ -81,7 +99,7 @@ The installer will attempt to install missing dependencies automatically.
 
 ### How It Works
 
-1. **gdrive-watch** (always running): Monitors local directory for file changes using inotifywait. When changes are detected, it triggers gdrive-sync after a 5-second debounce.
+1. **gdrive-sync-watch** (always running): Monitors local directory for file changes using inotifywait. When changes are detected, it triggers gdrive-sync after a 5-second debounce.
 
 2. **gdrive-sync** (every 2 minutes): Runs incremental bisync to catch remote changes and push any pending local changes. Handles conflicts, stale locks, and auto-recovery.
 
@@ -143,7 +161,7 @@ See [rclone filtering documentation](https://rclone.org/filtering/) for syntax d
 gdrive-sync
 
 # Force a full resync (recovery)
-gdrive-initial-resync
+gdrive-sync-resync
 
 # Check sync status
 cat ~/.local/state/gdrive-sync/status.json
@@ -157,19 +175,19 @@ ls -la ~/.local/state/gdrive-sync/logs/
 ```bash
 # Check service status
 systemctl --user status gdrive-sync.timer
-systemctl --user status gdrive-watch.service
+systemctl --user status gdrive-sync-watch.service
 
 # View service logs
 journalctl --user -u gdrive-sync.service -f
-journalctl --user -u gdrive-watch.service -f
+journalctl --user -u gdrive-sync-watch.service -f
 
 # Restart services
 systemctl --user restart gdrive-sync.timer
-systemctl --user restart gdrive-watch.service
+systemctl --user restart gdrive-sync-watch.service
 
 # Temporarily disable sync
 systemctl --user stop gdrive-sync.timer
-systemctl --user stop gdrive-watch.service
+systemctl --user stop gdrive-sync-watch.service
 ```
 
 ## Status Monitoring
@@ -230,34 +248,39 @@ rm -f ~/.cache/rclone/bisync/*.lck
 To reset everything and re-establish the sync baseline:
 ```bash
 # Stop services
-systemctl --user stop gdrive-sync.timer gdrive-watch.service
+systemctl --user stop gdrive-sync.timer gdrive-sync-watch.service
 
 # Clear rclone bisync state
 rm -rf ~/.cache/rclone/bisync/
 
 # Run fresh initial sync
-gdrive-initial-resync
+gdrive-sync-resync
 
 # Restart services
-systemctl --user start gdrive-sync.timer gdrive-watch.service
+systemctl --user start gdrive-sync.timer gdrive-sync-watch.service
 ```
 
 ## Uninstall
 
+First, each user who enabled the services disables them:
+
 ```bash
-./uninstall.sh
+systemctl --user disable --now gdrive-sync.timer gdrive-fullsync.timer gdrive-sync-watch.service
 ```
 
-This removes the scripts and services but keeps your synced data and rclone configuration.
+Then remove the package (`sudo pacman -R gdrive-sync` on Arch, or `sudo make uninstall` from the source tree).
+
+Your synced data, configuration and rclone remote are kept.
 
 ## File Locations
 
 | Path | Description |
 |------|-------------|
-| `~/.local/bin/gdrive-*` | Sync scripts |
-| `~/.config/gdrive-sync/config.env` | Configuration |
-| `~/.config/gdrive-sync/bisync-filters.txt` | Exclusion filters |
-| `~/.config/systemd/user/gdrive-*.{service,timer}` | Systemd units |
+| `/usr/bin/gdrive-*` | Sync scripts and `gdrive-sync-setup` |
+| `/usr/lib/systemd/user/gdrive-*.{service,timer}` | Systemd user units (shared by all users) |
+| `/usr/share/gdrive-sync/` | Default filters |
+| `~/.config/gdrive-sync/config.env` | Per-user configuration |
+| `~/.config/gdrive-sync/bisync-filters.txt` | Per-user exclusion filters (falls back to the default) |
 | `~/.local/state/gdrive-sync/` | State directory |
 | `~/.local/state/gdrive-sync/logs/` | Sync logs |
 | `~/.local/state/gdrive-sync/status.json` | Status file |
@@ -273,4 +296,4 @@ Built with [rclone](https://rclone.org/) - a powerful command-line cloud sync to
 
 ---
 
-**NamasteX Labs** | [GitHub](https://github.com/namastexlabs)
+**NSkyLabs** | [GitHub](https://github.com/NSky)

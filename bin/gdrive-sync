@@ -27,6 +27,12 @@ LOG_DIR="$STATE_DIR/logs"
 STATUS_FILE="$STATE_DIR/status.json"
 FAILURE_FILE="$STATE_DIR/consecutive_failures"
 FILTERS="${GDRIVE_FILTERS:-$HOME/.config/gdrive-sync/bisync-filters.txt}"
+# Fall back to the packaged default filters if the user has no copy
+# (<prefix>/share/gdrive-sync next to <prefix>/bin where this script lives)
+DEFAULT_FILTERS="$(dirname "$(readlink -f "$0")")/../share/gdrive-sync/bisync-filters.txt"
+if [[ ! -f "$FILTERS" && -f "$DEFAULT_FILTERS" ]]; then
+    FILTERS="$DEFAULT_FILTERS"
+fi
 MAX_FAILURES="${GDRIVE_MAX_FAILURES:-6}"
 LOCK_TIMEOUT="${GDRIVE_LOCK_TIMEOUT:-10}"
 
