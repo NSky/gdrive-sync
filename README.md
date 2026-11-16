@@ -107,7 +107,15 @@ Every user's services run under their own account with `systemctl --user`, using
 
 ## Configuration
 
-Configuration is stored in `~/.config/gdrive-sync/config.env`:
+Configuration is stored in `~/.config/gdrive-sync/config.env`. `gdrive-sync-setup` creates it for you; to configure manually, create the file yourself. Every setting is optional — anything left out uses the default shown below. The scripts read a different file if you set `GDRIVE_CONFIG=/path/to/config.env`.
+
+After changing the configuration, restart the watcher so it picks up the new values:
+
+```bash
+systemctl --user restart gdrive-sync-watch.service
+```
+
+Settings and their defaults:
 
 ```bash
 # Local directory to sync
@@ -125,7 +133,7 @@ GDRIVE_FILTERS="$HOME/.config/gdrive-sync/bisync-filters.txt"
 # Max failures before auto-resync
 GDRIVE_MAX_FAILURES=6
 
-# Lock timeout (minutes)
+# Lock timeout (minutes); stale locks older than this are removed
 GDRIVE_LOCK_TIMEOUT=10
 
 # Debounce delay (seconds)
