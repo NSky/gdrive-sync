@@ -1,8 +1,8 @@
 #!/bin/bash
 # gdrive-sync - Smart bidirectional sync with Google Drive via rclone bisync
 #
-# Part of linux-gdrive-sync
-# https://github.com/namastexlabs/linux-gdrive-sync
+# Part of gdrive-sync
+# https://github.com/NSky/gdrive-sync
 #
 # Features:
 # - Detects and removes stale locks from dead processes

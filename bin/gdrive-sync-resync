@@ -1,8 +1,8 @@
 #!/bin/bash
 # gdrive-sync-resync - Full initial resync utility
 #
-# Part of linux-gdrive-sync
-# https://github.com/namastexlabs/linux-gdrive-sync
+# Part of gdrive-sync
+# https://github.com/NSky/gdrive-sync
 #
 # Performs a complete --resync to establish the initial bisync baseline.
 # Run this after first setup or to recover from a broken state.

@@ -1,8 +1,8 @@
 #!/bin/bash
 # gdrive-sync-watch - Monitor local changes and trigger immediate sync
 #
-# Part of linux-gdrive-sync
-# https://github.com/namastexlabs/linux-gdrive-sync
+# Part of gdrive-sync
+# https://github.com/NSky/gdrive-sync
 #
 # Uses inotifywait to detect local file changes and triggers
 # gdrive-sync with a configurable debounce delay.

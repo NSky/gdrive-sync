@@ -1,4 +1,4 @@
-# linux-gdrive-sync bisync filters
+# gdrive-sync bisync filters
 # Customize this file to exclude files from incremental syncs.
 # See: https://rclone.org/filtering/
 
