@@ -1,0 +1,226 @@
+#!/bin/bash
+# gdrive-sync - Smart bidirectional sync with Google Drive via rclone bisync
+#
+# Part of linux-gdrive-sync
+# https://github.com/namastexlabs/linux-gdrive-sync
+#
+# Features:
+# - Detects and removes stale locks from dead processes
+# - Auto-resync after consecutive failures
+# - JSON status file for monitoring
+# - Log rotation (7 days)
+# - Conflict resolution: newest wins
+
+set -euo pipefail
+
+# === Load Configuration ===
+CONFIG_FILE="${GDRIVE_CONFIG:-$HOME/.config/gdrive-sync/config.env}"
+if [[ -f "$CONFIG_FILE" ]]; then
+    # shellcheck source=/dev/null
+    source "$CONFIG_FILE"
+fi
+
+REMOTE="${GDRIVE_REMOTE:-gdrive:}"
+LOCAL="${GDRIVE_LOCAL:-$HOME/gdrive}"
+STATE_DIR="${GDRIVE_STATE_DIR:-$HOME/.local/state/gdrive-sync}"
+LOG_DIR="$STATE_DIR/logs"
+STATUS_FILE="$STATE_DIR/status.json"
+FAILURE_FILE="$STATE_DIR/consecutive_failures"
+FILTERS="${GDRIVE_FILTERS:-$HOME/.config/gdrive-sync/bisync-filters.txt}"
+MAX_FAILURES="${GDRIVE_MAX_FAILURES:-6}"
+LOCK_TIMEOUT="${GDRIVE_LOCK_TIMEOUT:-10}"
+
+# Build rclone lock base path from the local path
+# rclone uses the local path with slashes replaced by dots
+LOCK_LOCAL_ENCODED=$(echo "$LOCAL" | sed 's|/|..|g; s|^\.||')
+LOCK_REMOTE_ENCODED=$(echo "$REMOTE" | sed 's|:|_|g; s|/|..|g')
+LOCK_BASE="$HOME/.cache/rclone/bisync/${LOCK_REMOTE_ENCODED}_${LOCK_LOCAL_ENCODED}"
+
+# === Functions ===
+
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
+}
+
+update_status() {
+    local status="$1"
+    local message="$2"
+    local failures
+    failures=$(cat "$FAILURE_FILE" 2>/dev/null || echo 0)
+    local last_success
+    last_success=$(jq -r '.last_success // "never"' "$STATUS_FILE" 2>/dev/null || echo "never")
+
+    if [[ "$status" == "success" ]]; then
+        last_success=$(date -Iseconds)
+    fi
+
+    cat > "$STATUS_FILE" <<EOF
+{
+  "status": "$status",
+  "message": "$message",
+  "consecutive_failures": $failures,
+  "last_success": "$last_success",
+  "updated_at": "$(date -Iseconds)"
+}
+EOF
+}
+
+cleanup_old_logs() {
+    find "$LOG_DIR" -name "*.log" -mtime +7 -delete 2>/dev/null || true
+}
+
+check_stale_lock() {
+    local lock_file="${LOCK_BASE}.lck"
+
+    if [[ -f "$lock_file" ]]; then
+        local lock_age_minutes=$(( ($(date +%s) - $(stat -c %Y "$lock_file")) / 60 ))
+
+        if [[ $lock_age_minutes -gt $LOCK_TIMEOUT ]]; then
+            log "WARNING: Lock file is $lock_age_minutes minutes old (limit: $LOCK_TIMEOUT). Removing..."
+            rm -f "$lock_file"
+            rm -f "${LOCK_BASE}".path*.lst-new
+            rm -f "${LOCK_BASE}".path*.lst-dry-new
+            return 0
+        else
+            log "LOCKED: Another sync is running ($lock_age_minutes min). Exiting."
+            update_status "skipped" "Another sync in progress"
+            exit 0
+        fi
+    fi
+}
+
+get_failures() {
+    cat "$FAILURE_FILE" 2>/dev/null || echo 0
+}
+
+increment_failures() {
+    local current
+    current=$(get_failures)
+    echo $((current + 1)) > "$FAILURE_FILE"
+}
+
+reset_failures() {
+    echo 0 > "$FAILURE_FILE"
+}
+
+do_resync() {
+    log "Executing full RESYNC..."
+    local resync_args=(
+        bisync "$REMOTE" "$LOCAL"
+        --resync
+        --resilient
+        --conflict-resolve newer
+        --conflict-suffix "_{datestr}"
+        --max-lock "${LOCK_TIMEOUT}m"
+        -v
+    )
+
+    if [[ -f "$FILTERS" ]]; then
+        resync_args+=(--filters-file "$FILTERS")
+    fi
+
+    rclone "${resync_args[@]}"
+}
+
+do_bisync() {
+    local extra_args="${1:-}"
+    local output_file
+    output_file=$(mktemp)
+    local exit_code=0
+
+    local bisync_args=(
+        bisync "$REMOTE" "$LOCAL"
+        --resilient
+        --conflict-resolve newer
+        --conflict-suffix "_{datestr}"
+        --max-lock "${LOCK_TIMEOUT}m"
+        -v
+    )
+
+    if [[ -f "$FILTERS" ]]; then
+        bisync_args+=(--filters-file "$FILTERS")
+    fi
+
+    # shellcheck disable=SC2086
+    rclone "${bisync_args[@]}" $extra_args 2>&1 | tee "$output_file" || exit_code=$?
+
+    # Detect remote changes (coming from Drive)
+    detect_remote_changes "$output_file"
+
+    rm -f "$output_file"
+    return $exit_code
+}
+
+detect_remote_changes() {
+    local output_file="$1"
+    local remote_changes_file="$STATE_DIR/last_remote_changes.txt"
+
+    local remote_files
+    remote_files=$(grep -E "Path1.*queue copy to Path2|Copying.*${REMOTE}" "$output_file" 2>/dev/null | head -20 || true)
+
+    if [[ -n "$remote_files" ]]; then
+        local count
+        count=$(echo "$remote_files" | wc -l)
+        log "Detected $count remote changes from Drive"
+
+        echo "=== $(date -Iseconds) ===" >> "$remote_changes_file"
+        echo "$remote_files" >> "$remote_changes_file"
+        echo "" >> "$remote_changes_file"
+
+        # Keep file small (last 100 lines)
+        if [[ -f "$remote_changes_file" ]]; then
+            tail -100 "$remote_changes_file" > "$remote_changes_file.tmp" && mv "$remote_changes_file.tmp" "$remote_changes_file"
+        fi
+    fi
+}
+
+# === Main ===
+
+mkdir -p "$LOG_DIR" "$STATE_DIR"
+LOG_FILE="$LOG_DIR/sync_$(date '+%Y%m%d_%H%M%S').log"
+
+{
+    log "Starting gdrive-sync"
+    update_status "running" "Sync in progress"
+
+    # Clean old logs
+    cleanup_old_logs
+
+    # Check for stale locks
+    check_stale_lock
+
+    # Check if resync needed
+    failures=$(get_failures)
+    if [[ $failures -ge $MAX_FAILURES ]]; then
+        log "WARNING: $failures consecutive failures. Forcing resync..."
+        reset_failures
+
+        if do_resync; then
+            log "Full resync completed successfully!"
+            reset_failures
+            update_status "success" "Resync completed after $failures failures"
+        else
+            log "ERROR: Resync failed!"
+            increment_failures
+            update_status "error" "Resync failed"
+            exit 1
+        fi
+    else
+        # Normal sync
+        if do_bisync; then
+            log "Sync completed successfully!"
+            reset_failures
+            update_status "success" "Sync OK"
+        else
+            exit_code=$?
+            increment_failures
+            new_failures=$(get_failures)
+            log "ERROR: Sync failed (code: $exit_code). Consecutive failures: $new_failures"
+            update_status "error" "Failure #$new_failures (code: $exit_code)"
+            exit 1
+        fi
+    fi
+
+    log "gdrive-sync finished"
+
+} 2>&1 | tee "$LOG_FILE"

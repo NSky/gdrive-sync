@@ -1,0 +1,74 @@
+#!/bin/bash
+# gdrive-initial-resync - Full initial resync utility
+#
+# Part of linux-gdrive-sync
+# https://github.com/namastexlabs/linux-gdrive-sync
+#
+# Performs a complete --resync to establish the initial bisync baseline.
+# Run this after first setup or to recover from a broken state.
+
+set -euo pipefail
+
+# === Load Configuration ===
+CONFIG_FILE="${GDRIVE_CONFIG:-$HOME/.config/gdrive-sync/config.env}"
+if [[ -f "$CONFIG_FILE" ]]; then
+    # shellcheck source=/dev/null
+    source "$CONFIG_FILE"
+fi
+
+REMOTE="${GDRIVE_REMOTE:-gdrive:}"
+LOCAL="${GDRIVE_LOCAL:-$HOME/gdrive}"
+STATE_DIR="${GDRIVE_STATE_DIR:-$HOME/.local/state/gdrive-sync}"
+STATUS_FILE="$STATE_DIR/initial-resync-status.json"
+LOG_FILE="$STATE_DIR/logs/initial-resync-$(date '+%Y%m%d_%H%M%S').log"
+LOCK_TIMEOUT="${GDRIVE_LOCK_TIMEOUT:-10}"
+
+mkdir -p "$STATE_DIR/logs"
+
+update_status() {
+    local status="$1"
+    local message="$2"
+    local progress="${3:-}"
+    cat > "$STATUS_FILE" <<EOF
+{
+  "status": "$status",
+  "message": "$message",
+  "progress": "$progress",
+  "started_at": "${STARTED_AT:-$(date -Iseconds)}",
+  "updated_at": "$(date -Iseconds)",
+  "log_file": "$LOG_FILE"
+}
+EOF
+}
+
+STARTED_AT=$(date -Iseconds)
+update_status "running" "Starting initial resync..." "0%"
+
+{
+    echo "=== INITIAL FULL RESYNC ==="
+    echo "Started: $(date)"
+    echo "Remote: $REMOTE"
+    echo "Local:  $LOCAL"
+    echo ""
+
+    # Full resync WITHOUT filters to capture everything (including large PDFs)
+    if rclone bisync "$REMOTE" "$LOCAL" \
+        --resync \
+        --resilient \
+        --conflict-resolve newer \
+        --conflict-suffix "_{datestr}" \
+        --max-lock "${LOCK_TIMEOUT}m" \
+        -v 2>&1; then
+
+        echo ""
+        echo "=== RESYNC COMPLETED SUCCESSFULLY ==="
+        echo "Finished: $(date)"
+        update_status "success" "Initial resync completed!" "100%"
+    else
+        echo ""
+        echo "=== RESYNC FAILED ==="
+        echo "Finished with error: $(date)"
+        update_status "error" "Resync failed - check log" "error"
+    fi
+
+} >> "$LOG_FILE" 2>&1

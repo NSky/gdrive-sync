@@ -1,0 +1,14 @@
+[Unit]
+Description=Watch local directory for changes (real-time Google Drive sync)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/gdrive-watch
+Restart=always
+RestartSec=10
+Environment="PATH=/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin:%h/.local/bin"
+
+[Install]
+WantedBy=default.target

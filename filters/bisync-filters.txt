@@ -1,0 +1,24 @@
+# linux-gdrive-sync bisync filters
+# Customize this file to exclude files from incremental syncs.
+# See: https://rclone.org/filtering/
+
+# === Office temporary files ===
+- ~$*
+- ~*.tmp
+- .~lock.*
+
+# === System junk ===
+- .DS_Store
+- Thumbs.db
+- desktop.ini
+- .Trash-*
+- *.swp
+- *.swo
+
+# === Optional: exclude large files from incremental sync ===
+# Uncomment and add patterns for files that should only sync during
+# the daily full resync (e.g., very large PDFs):
+# - huge-file.pdf
+
+# === Include everything else ===
++ **
