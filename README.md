@@ -22,9 +22,17 @@ A complete solution for keeping a local directory in sync with Google Drive usin
 
 ### Arch Linux
 
+The package is available in the AUR as [nsky-gdrive-sync](https://aur.archlinux.org/packages/nsky-gdrive-sync). Install it with an AUR helper:
+
 ```bash
-git clone https://github.com/NSky/gdrive-sync.git
-cd gdrive-sync/packaging/arch
+yay -S nsky-gdrive-sync      # or: paru -S nsky-gdrive-sync
+```
+
+or manually:
+
+```bash
+git clone https://aur.archlinux.org/nsky-gdrive-sync.git
+cd nsky-gdrive-sync
 makepkg -si
 ```
 
@@ -276,7 +284,7 @@ First, each user who enabled the services disables them:
 systemctl --user disable --now gdrive-sync.timer gdrive-sync-full.timer gdrive-sync-watch.service
 ```
 
-Then remove the package (`sudo pacman -R gdrive-sync` on Arch, or `sudo make uninstall` from the source tree).
+Then remove the package (`sudo pacman -R nsky-gdrive-sync` on Arch, or `sudo make uninstall` from the source tree).
 
 Your synced data, configuration and rclone remote are kept.
 
