@@ -295,7 +295,7 @@ enable_services() {
 main() {
     echo ""
     echo "=========================================="
-    echo "  gdrive-sync setup "
+    echo "  Setup gdrive-sync"
     echo "=========================================="
     echo ""
 
