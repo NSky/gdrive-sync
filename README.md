@@ -91,7 +91,7 @@ Every user's services run under their own account with `systemctl --user`, using
 │  └─────────────────────────────────────────────────────────────┘  │
 │                                                                    │
 │  ┌─────────────────────────────────────────────────────────────┐  │
-│  │                   gdrive-fullsync                            │  │
+│  │                   gdrive-sync-full                           │  │
 │  │              (daily full resync at 3am)                      │  │
 │  └─────────────────────────────────────────────────────────────┘  │
 └────────────────────────────────────────────────────────────────────┘
@@ -103,7 +103,7 @@ Every user's services run under their own account with `systemctl --user`, using
 
 2. **gdrive-sync** (every 2 minutes): Runs incremental bisync to catch remote changes and push any pending local changes. Handles conflicts, stale locks, and auto-recovery.
 
-3. **gdrive-fullsync** (daily at 3am): Performs a full `--resync` to ensure complete consistency, including any large files excluded from incremental syncs.
+3. **gdrive-sync-full** (daily at 3am): Performs a full `--resync` to ensure complete consistency, including any large files excluded from incremental syncs.
 
 ## Configuration
 
@@ -137,7 +137,7 @@ GDRIVE_DEBOUNCE_SEC=5
 Edit `~/.config/gdrive-sync/bisync-filters.txt` to exclude files from incremental syncs:
 
 ```
-# Exclude large files (will only sync during daily fullsync)
+# Exclude large files (will only sync during daily full sync)
 - huge-video.mp4
 - *.iso
 
@@ -161,7 +161,7 @@ See [rclone filtering documentation](https://rclone.org/filtering/) for syntax d
 gdrive-sync
 
 # Force a full resync (recovery)
-gdrive-sync-resync
+gdrive-sync-full
 
 # Check sync status
 cat ~/.local/state/gdrive-sync/status.json
@@ -254,7 +254,7 @@ systemctl --user stop gdrive-sync.timer gdrive-sync-watch.service
 rm -rf ~/.cache/rclone/bisync/
 
 # Run fresh initial sync
-gdrive-sync-resync
+gdrive-sync-full
 
 # Restart services
 systemctl --user start gdrive-sync.timer gdrive-sync-watch.service
@@ -265,7 +265,7 @@ systemctl --user start gdrive-sync.timer gdrive-sync-watch.service
 First, each user who enabled the services disables them:
 
 ```bash
-systemctl --user disable --now gdrive-sync.timer gdrive-fullsync.timer gdrive-sync-watch.service
+systemctl --user disable --now gdrive-sync.timer gdrive-sync-full.timer gdrive-sync-watch.service
 ```
 
 Then remove the package (`sudo pacman -R gdrive-sync` on Arch, or `sudo make uninstall` from the source tree).

@@ -5,7 +5,7 @@ Conflicts=gdrive-sync.service
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/gdrive-sync-resync
+ExecStart=/usr/bin/gdrive-sync-full
 TimeoutStartSec=1800
 
 [Install]

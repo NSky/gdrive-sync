@@ -5,7 +5,7 @@ After=network-online.target
 [Service]
 Type=oneshot
 ExecStart=/usr/bin/gdrive-sync
-TimeoutStartSec=300
+TimeoutStartSec=600
 
 [Install]
 WantedBy=default.target

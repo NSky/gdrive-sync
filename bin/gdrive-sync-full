@@ -1,5 +1,5 @@
 #!/bin/bash
-# gdrive-sync-resync - Full initial resync utility
+# gdrive-sync-full - Full initial resync utility
 #
 # Part of gdrive-sync
 # https://github.com/NSky/gdrive-sync

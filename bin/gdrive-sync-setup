@@ -30,7 +30,7 @@ STATE_DIR="$HOME/.local/state/gdrive-sync"
 DEFAULT_LOCAL="$HOME/gdrive"
 DEFAULT_REMOTE="gdrive:"
 
-UNITS=(gdrive-sync.timer gdrive-fullsync.timer gdrive-sync-watch.service)
+UNITS=(gdrive-sync.timer gdrive-sync-full.timer gdrive-sync-watch.service)
 
 log_info() {
     echo -e "${BLUE}[INFO]${NC} $*"
@@ -255,11 +255,11 @@ run_initial_resync() {
     log_info "This may take a while depending on your Google Drive contents."
     echo ""
 
-    if "$SELF_DIR/gdrive-sync-resync"; then
+    if "$SELF_DIR/gdrive-sync-full"; then
         log_success "Initial resync completed!"
     else
         log_error "Initial resync failed. Check logs at $STATE_DIR/logs/"
-        echo "You can retry with: gdrive-sync-resync"
+        echo "You can retry with: gdrive-sync-full"
     fi
 }
 
@@ -325,7 +325,7 @@ main() {
     echo ""
     echo "Useful commands:"
     echo "  gdrive-sync                 - Manual sync"
-    echo "  gdrive-sync-resync       - Full resync (recovery)"
+    echo "  gdrive-sync-full            - Full resync (recovery)"
     echo "  systemctl --user status gdrive-sync-watch.service"
     echo "  cat $STATE_DIR/status.json  - Check sync status"
     echo ""
