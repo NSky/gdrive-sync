@@ -43,7 +43,7 @@ rotate_log() {
 
 trigger_sync() {
     # gdrive-sync takes the shared sync lock itself and skips if another
-    # sync (timer run or gdrive-sync-full) is already in progress.
+    # sync (timer run or a resync) is already in progress.
     log "Triggering sync due to local change..."
     if "$SYNC_CMD"; then
         log "Sync from local change completed!"

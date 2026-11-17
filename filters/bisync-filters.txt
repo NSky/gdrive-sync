@@ -1,6 +1,6 @@
 # gdrive-sync bisync filters
 # Customize this file to exclude files from syncing.
-# After changing it, run gdrive-sync-full once: rclone bisync needs a
+# After changing it, run `gdrive-sync --resync` once: rclone bisync needs a
 # fresh baseline whenever the filters change.
 # See: https://rclone.org/filtering/
 

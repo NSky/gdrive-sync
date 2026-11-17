@@ -283,11 +283,11 @@ run_initial_resync() {
     log_info "This may take a while depending on your Google Drive contents."
     echo ""
 
-    if "$SELF_DIR/gdrive-sync-full"; then
+    if "$SELF_DIR/gdrive-sync" --resync; then
         log_success "Initial resync completed!"
     else
         log_error "Initial resync failed. Check logs at $STATE_DIR/logs/"
-        echo "You can retry with: gdrive-sync-full"
+        echo "You can retry with: gdrive-sync --resync"
     fi
 }
 
@@ -360,7 +360,7 @@ main() {
     echo ""
     echo "Useful commands:"
     echo "  gdrive-sync                 - Manual sync"
-    echo "  gdrive-sync-full            - Full resync (recovery)"
+    echo "  gdrive-sync --resync        - Full resync (recovery)"
     echo "  systemctl --user status gdrive-sync-watch.service"
     echo "  cat $STATE_DIR/status.json  - Check sync status"
     echo ""

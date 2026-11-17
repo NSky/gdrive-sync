@@ -104,9 +104,9 @@ Every user's services run under their own account with `systemctl --user`, using
 
 1. **gdrive-sync-watch** (always running): Monitors local directory for file changes using inotifywait. When changes are detected, it triggers gdrive-sync after a 5-second debounce.
 
-2. **gdrive-sync** (every 2 minutes): Runs incremental bisync to catch remote changes and push any pending local changes. Handles conflicts, stale locks, and auto-recovery.
+2. **gdrive-sync** (every 2 minutes): Runs incremental bisync to catch remote changes and push any pending local changes. Handles conflicts, locking, and auto-recovery. Only one sync runs at a time: if a sync is already in progress, the next run is skipped.
 
-3. **gdrive-sync-full** (on demand): Performs a full `--resync` to rebuild the sync baseline. Run it manually to recover from a broken state or after changing the filters. `gdrive-sync` also runs a resync on its own after repeated failures.
+3. **gdrive-sync --resync** (on demand): Performs a full resync to rebuild the sync baseline. Run it after first setup, after changing the filters, or to recover from a broken state. It waits for a running sync to finish rather than skipping. `gdrive-sync` also runs a resync on its own after repeated failures.
 
 ## Configuration
 
@@ -161,7 +161,7 @@ Edit `~/.config/gdrive-sync/bisync-filters.txt` to exclude files from syncing:
 + **
 ```
 
-After changing the filters, run `gdrive-sync-full` once: rclone bisync needs a fresh baseline whenever the filters change.
+After changing the filters, run `gdrive-sync --resync` once: rclone bisync needs a fresh baseline whenever the filters change.
 
 See [rclone filtering documentation](https://rclone.org/filtering/) for syntax details.
 
@@ -173,8 +173,8 @@ See [rclone filtering documentation](https://rclone.org/filtering/) for syntax d
 # Run an immediate sync
 gdrive-sync
 
-# Force a full resync (recovery)
-gdrive-sync-full
+# Force a full resync (recovery, or after changing filters)
+gdrive-sync --resync
 
 # Check sync status
 cat ~/.local/state/gdrive-sync/status.json
@@ -215,12 +215,17 @@ Example output:
 ```json
 {
   "status": "success",
+  "mode": "sync",
   "message": "Sync OK",
   "consecutive_failures": 0,
   "last_success": "2025-01-15T10:30:00+00:00",
-  "updated_at": "2025-01-15T10:30:00+00:00"
+  "last_resync": "2025-01-10T09:00:00+00:00",
+  "updated_at": "2025-01-15T10:30:00+00:00",
+  "log_file": "/home/user/.local/state/gdrive-sync/logs/sync_20250115_103000.log"
 }
 ```
+
+`mode` is `sync` for incremental runs and `resync` for full resyncs (requested with `--resync` or started automatically after repeated failures). `last_resync` is the time of the last successful resync.
 
 ### Status Values
 
@@ -238,6 +243,8 @@ Check the logs:
 ```bash
 tail -f ~/.local/state/gdrive-sync/logs/sync_*.log
 ```
+
+Resync runs log to `resync_*.log` in the same directory.
 
 After 6 consecutive failures, the system will automatically attempt a full resync.
 
@@ -266,7 +273,7 @@ systemctl --user stop gdrive-sync.timer gdrive-sync-watch.service
 rm -rf ~/.cache/rclone/bisync/
 
 # Run fresh initial sync
-gdrive-sync-full
+gdrive-sync --resync
 
 # Restart services
 systemctl --user start gdrive-sync.timer gdrive-sync-watch.service

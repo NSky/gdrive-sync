@@ -4,14 +4,51 @@
 # Part of gdrive-sync
 # https://github.com/NSky/gdrive-sync
 #
+# Usage:
+#   gdrive-sync            Incremental sync (run by the timer and the watcher)
+#   gdrive-sync --resync   Full resync: rebuild the bisync baseline. Run it
+#                          after first setup, after changing the filters, or
+#                          to recover from a broken state.
+#
 # Features:
-# - Skips the run when another sync already holds the lock
+# - Only one sync runs at a time (incremental runs skip, resyncs wait)
 # - Auto-resync after consecutive failures
 # - JSON status file for monitoring
 # - Log rotation (7 days)
 # - Conflict resolution: newest wins
 
 set -euo pipefail
+
+usage() {
+    cat <<'EOF'
+Usage: gdrive-sync [--resync]
+
+Bidirectional sync between a local directory and Google Drive.
+
+  (no option)   Incremental sync. Skips if another sync is running.
+  --resync      Full resync to rebuild the sync baseline. Waits for a
+                running sync to finish. Use after first setup, after
+                changing the filters, or to recover from errors.
+  -h, --help    Show this help.
+
+Configuration: ~/.config/gdrive-sync/config.env (or $GDRIVE_CONFIG)
+EOF
+}
+
+# === Arguments ===
+MODE="sync"
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --resync) MODE="resync" ;;
+        -h|--help) usage; exit 0 ;;
+        *)
+            echo "gdrive-sync: unknown option: $1" >&2
+            usage >&2
+            exit 2
+            ;;
+    esac
+    shift
+done
 
 # === Load Configuration ===
 CONFIG_FILE="${GDRIVE_CONFIG:-$HOME/.config/gdrive-sync/config.env}"
@@ -36,7 +73,7 @@ fi
 MAX_FAILURES="${GDRIVE_MAX_FAILURES:-6}"
 LOCK_TIMEOUT="${GDRIVE_LOCK_TIMEOUT:-10}"
 
-# Shared with gdrive-sync-full so only one sync runs at a time.
+# Only one sync (timer, watcher or manual resync) runs at a time.
 # Stale rclone locks left by a killed run expire via --max-lock.
 SYNC_LOCK="$STATE_DIR/sync.lock"
 
@@ -46,28 +83,44 @@ log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
 }
 
+# Read a field from the previous status file, or print the default
+previous_status() {
+    jq -r --arg d "$2" ".$1 // \$d" "$STATUS_FILE" 2>/dev/null || echo "$2"
+}
+
+# update_status <status> <message> <mode>
 update_status() {
     local status="$1"
     local message="$2"
-    local failures
+    local mode="$3"
+    local now failures last_success last_resync
+    now=$(date -Iseconds)
     failures=$(get_failures)
-    local last_success
-    last_success=$(jq -r '.last_success // "never"' "$STATUS_FILE" 2>/dev/null || echo "never")
+    last_success=$(previous_status last_success never)
+    last_resync=$(previous_status last_resync never)
 
     if [[ "$status" == "success" ]]; then
-        last_success=$(date -Iseconds)
+        last_success="$now"
+        if [[ "$mode" == "resync" ]]; then
+            last_resync="$now"
+        fi
     fi
 
     # jq escapes the values; writing to a temp file and renaming means
     # readers never see a half-written status file
     jq -n \
         --arg status "$status" \
+        --arg mode "$mode" \
         --arg message "$message" \
         --argjson failures "$failures" \
         --arg last_success "$last_success" \
-        --arg updated_at "$(date -Iseconds)" \
-        '{status: $status, message: $message, consecutive_failures: $failures,
-          last_success: $last_success, updated_at: $updated_at}' \
+        --arg last_resync "$last_resync" \
+        --arg updated_at "$now" \
+        --arg log_file "$LOG_FILE" \
+        '{status: $status, mode: $mode, message: $message,
+          consecutive_failures: $failures, last_success: $last_success,
+          last_resync: $last_resync, updated_at: $updated_at,
+          log_file: $log_file}' \
         > "$STATUS_FILE.tmp" && mv "$STATUS_FILE.tmp" "$STATUS_FILE"
 }
 
@@ -93,47 +146,37 @@ reset_failures() {
     echo 0 > "$FAILURE_FILE"
 }
 
-do_resync() {
-    log "Executing full RESYNC..."
-    local resync_args=(
-        bisync "$REMOTE" "$LOCAL"
-        --resync
-        --resync-mode newer
+# Arguments shared by incremental runs and resyncs. Both must use the
+# same filters: bisync needs the baseline built by --resync to match.
+common_args() {
+    COMMON_ARGS=(
         --resilient
         --conflict-resolve newer
         --conflict-suffix "_{datestr}"
         --max-lock "${LOCK_TIMEOUT}m"
         -v
     )
-
     if [[ -f "$FILTERS" ]]; then
-        resync_args+=(--filters-file "$FILTERS")
+        COMMON_ARGS+=(--filters-file "$FILTERS")
     fi
+}
 
-    rclone "${resync_args[@]}"
+do_resync() {
+    log "Executing full RESYNC..."
+    log "Filters: $( [[ -f "$FILTERS" ]] && echo "$FILTERS" || echo none )"
+    common_args
+    # --resync-mode newer keeps the newer copy when a file differs on both
+    # sides; the default (path1) would let Drive overwrite newer local edits.
+    rclone bisync "$REMOTE" "$LOCAL" --resync --resync-mode newer "${COMMON_ARGS[@]}"
 }
 
 do_bisync() {
-    local extra_args="${1:-}"
     local output_file
     output_file=$(mktemp)
     local exit_code=0
 
-    local bisync_args=(
-        bisync "$REMOTE" "$LOCAL"
-        --resilient
-        --conflict-resolve newer
-        --conflict-suffix "_{datestr}"
-        --max-lock "${LOCK_TIMEOUT}m"
-        -v
-    )
-
-    if [[ -f "$FILTERS" ]]; then
-        bisync_args+=(--filters-file "$FILTERS")
-    fi
-
-    # shellcheck disable=SC2086
-    rclone "${bisync_args[@]}" $extra_args 2>&1 | tee "$output_file" || exit_code=$?
+    common_args
+    rclone bisync "$REMOTE" "$LOCAL" "${COMMON_ARGS[@]}" 2>&1 | tee "$output_file" || exit_code=$?
 
     # Detect remote changes (coming from Drive)
     detect_remote_changes "$output_file"
@@ -170,50 +213,72 @@ detect_remote_changes() {
 mkdir -p "$LOG_DIR" "$STATE_DIR"
 
 # Take the sync lock (held on fd 9 until this script and rclone exit).
-# If another sync holds it, skip quietly: the next timer run catches up.
+# An incremental run skips if another sync holds it: the next timer run
+# catches up. A requested resync waits for the running sync instead.
 exec 9>"$SYNC_LOCK"
 if ! flock -n 9; then
-    log "Another sync is in progress. Skipping."
-    exit 0
+    if [[ "$MODE" == "sync" ]]; then
+        log "Another sync is in progress. Skipping."
+        exit 0
+    fi
+    log "Another sync is running; waiting up to ${LOCK_TIMEOUT} minutes..."
+    if ! flock -w "$((LOCK_TIMEOUT * 60))" 9; then
+        log "ERROR: Timed out waiting for the running sync to finish."
+        exit 1
+    fi
 fi
 
-LOG_FILE="$LOG_DIR/sync_$(date '+%Y%m%d_%H%M%S').log"
+# Too many consecutive failures: recover with a resync, the same as a
+# requested one
+failures=$(get_failures)
+AUTO_RESYNC=0
+if [[ "$MODE" == "sync" && $failures -ge $MAX_FAILURES ]]; then
+    MODE="resync"
+    AUTO_RESYNC=1
+fi
+
+LOG_FILE="$LOG_DIR/${MODE}_$(date '+%Y%m%d_%H%M%S').log"
 
 {
-    log "Starting gdrive-sync"
-    update_status "running" "Sync in progress"
+    log "Starting gdrive-sync ($MODE)"
+    log "Remote: $REMOTE"
+    log "Local:  $LOCAL"
 
     # Clean old logs
     cleanup_old_logs
 
-    # Check if resync needed
-    failures=$(get_failures)
-    if [[ $failures -ge $MAX_FAILURES ]]; then
-        log "WARNING: $failures consecutive failures. Forcing resync..."
-        reset_failures
+    if [[ "$MODE" == "resync" ]]; then
+        if [[ $AUTO_RESYNC -eq 1 ]]; then
+            log "WARNING: $failures consecutive failures. Forcing resync..."
+            success_message="Resync completed after $failures failures"
+        else
+            success_message="Resync completed"
+        fi
+        update_status "running" "Resync in progress" "$MODE"
 
         if do_resync; then
             log "Full resync completed successfully!"
             reset_failures
-            update_status "success" "Resync completed after $failures failures"
+            update_status "success" "$success_message" "$MODE"
         else
             log "ERROR: Resync failed!"
             increment_failures
-            update_status "error" "Resync failed"
+            update_status "error" "Resync failed" "$MODE"
             exit 1
         fi
     else
-        # Normal sync
+        update_status "running" "Sync in progress" "$MODE"
+
         if do_bisync; then
             log "Sync completed successfully!"
             reset_failures
-            update_status "success" "Sync OK"
+            update_status "success" "Sync OK" "$MODE"
         else
             exit_code=$?
             increment_failures
             new_failures=$(get_failures)
             log "ERROR: Sync failed (code: $exit_code). Consecutive failures: $new_failures"
-            update_status "error" "Failure #$new_failures (code: $exit_code)"
+            update_status "error" "Failure #$new_failures (code: $exit_code)" "$MODE"
             exit 1
         fi
     fi
