@@ -5,7 +5,7 @@
 # https://github.com/NSky/gdrive-sync
 #
 # Features:
-# - Detects and removes stale locks from dead processes
+# - Skips the run when another sync already holds the lock
 # - Auto-resync after consecutive failures
 # - JSON status file for monitoring
 # - Log rotation (7 days)
@@ -36,11 +36,9 @@ fi
 MAX_FAILURES="${GDRIVE_MAX_FAILURES:-6}"
 LOCK_TIMEOUT="${GDRIVE_LOCK_TIMEOUT:-10}"
 
-# Build rclone lock base path from the local path
-# rclone uses the local path with slashes replaced by dots
-LOCK_LOCAL_ENCODED=$(echo "$LOCAL" | sed 's|/|..|g; s|^\.||')
-LOCK_REMOTE_ENCODED=$(echo "$REMOTE" | sed 's|:|_|g; s|/|..|g')
-LOCK_BASE="$HOME/.cache/rclone/bisync/${LOCK_REMOTE_ENCODED}_${LOCK_LOCAL_ENCODED}"
+# Shared with gdrive-sync-full so only one sync runs at a time.
+# Stale rclone locks left by a killed run expire via --max-lock.
+SYNC_LOCK="$STATE_DIR/sync.lock"
 
 # === Functions ===
 
@@ -75,26 +73,6 @@ cleanup_old_logs() {
     find "$LOG_DIR" -name "*.log" -mtime +7 -delete 2>/dev/null || true
 }
 
-check_stale_lock() {
-    local lock_file="${LOCK_BASE}.lck"
-
-    if [[ -f "$lock_file" ]]; then
-        local lock_age_minutes=$(( ($(date +%s) - $(stat -c %Y "$lock_file")) / 60 ))
-
-        if [[ $lock_age_minutes -gt $LOCK_TIMEOUT ]]; then
-            log "WARNING: Lock file is $lock_age_minutes minutes old (limit: $LOCK_TIMEOUT). Removing..."
-            rm -f "$lock_file"
-            rm -f "${LOCK_BASE}".path*.lst-new
-            rm -f "${LOCK_BASE}".path*.lst-dry-new
-            return 0
-        else
-            log "LOCKED: Another sync is running ($lock_age_minutes min). Exiting."
-            update_status "skipped" "Another sync in progress"
-            exit 0
-        fi
-    fi
-}
-
 get_failures() {
     cat "$FAILURE_FILE" 2>/dev/null || echo 0
 }
@@ -114,6 +92,7 @@ do_resync() {
     local resync_args=(
         bisync "$REMOTE" "$LOCAL"
         --resync
+        --resync-mode newer
         --resilient
         --conflict-resolve newer
         --conflict-suffix "_{datestr}"
@@ -183,6 +162,15 @@ detect_remote_changes() {
 # === Main ===
 
 mkdir -p "$LOG_DIR" "$STATE_DIR"
+
+# Take the sync lock (held on fd 9 until this script and rclone exit).
+# If another sync holds it, skip quietly: the next timer run catches up.
+exec 9>"$SYNC_LOCK"
+if ! flock -n 9; then
+    log "Another sync is in progress. Skipping."
+    exit 0
+fi
+
 LOG_FILE="$LOG_DIR/sync_$(date '+%Y%m%d_%H%M%S').log"
 
 {
@@ -191,9 +179,6 @@ LOG_FILE="$LOG_DIR/sync_$(date '+%Y%m%d_%H%M%S').log"
 
     # Clean old logs
     cleanup_old_logs
-
-    # Check for stale locks
-    check_stale_lock
 
     # Check if resync needed
     failures=$(get_failures)

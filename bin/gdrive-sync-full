@@ -5,7 +5,8 @@
 # https://github.com/NSky/gdrive-sync
 #
 # Performs a complete --resync to establish the initial bisync baseline.
-# Run this after first setup or to recover from a broken state.
+# Run it on demand: after first setup or to recover from a broken state.
+# gdrive-sync also runs a resync on its own after repeated failures.
 
 set -euo pipefail
 
@@ -22,6 +23,15 @@ STATE_DIR="${GDRIVE_STATE_DIR:-$HOME/.local/state/gdrive-sync}"
 STATUS_FILE="$STATE_DIR/initial-resync-status.json"
 LOG_FILE="$STATE_DIR/logs/initial-resync-$(date '+%Y%m%d_%H%M%S').log"
 LOCK_TIMEOUT="${GDRIVE_LOCK_TIMEOUT:-10}"
+FILTERS="${GDRIVE_FILTERS:-$HOME/.config/gdrive-sync/bisync-filters.txt}"
+# Fall back to the packaged default filters if the user has no copy
+# (<prefix>/share/gdrive-sync next to <prefix>/bin where this script lives)
+DEFAULT_FILTERS="$(dirname "$(readlink -f "$0")")/../share/gdrive-sync/bisync-filters.txt"
+if [[ ! -f "$FILTERS" && -f "$DEFAULT_FILTERS" ]]; then
+    FILTERS="$DEFAULT_FILTERS"
+fi
+# Shared with gdrive-sync so only one sync runs at a time
+SYNC_LOCK="$STATE_DIR/sync.lock"
 
 mkdir -p "$STATE_DIR/logs"
 
@@ -41,34 +51,64 @@ update_status() {
 EOF
 }
 
+# Wait for a running sync to finish rather than racing it. The lock is
+# held on fd 9 until this script and its rclone child exit.
+exec 9>"$SYNC_LOCK"
+if ! flock -n 9; then
+    echo "Another sync is running; waiting up to ${LOCK_TIMEOUT} minutes..."
+    if ! flock -w "$((LOCK_TIMEOUT * 60))" 9; then
+        echo "ERROR: Timed out waiting for the running sync to finish." >&2
+        exit 1
+    fi
+fi
+
 STARTED_AT=$(date -Iseconds)
 update_status "running" "Starting initial resync..." "0%"
 
+# Use the same filters as gdrive-sync: bisync needs the baseline built by
+# --resync to match the filters later incremental runs use.
+filter_args=()
+if [[ -f "$FILTERS" ]]; then
+    filter_args=(--filters-file "$FILTERS")
+else
+    FILTERS=""
+fi
+
+result=0
 {
     echo "=== INITIAL FULL RESYNC ==="
     echo "Started: $(date)"
     echo "Remote: $REMOTE"
     echo "Local:  $LOCAL"
+    echo "Filters: ${FILTERS:-none}"
     echo ""
 
-    # Full resync WITHOUT filters to capture everything (including large PDFs)
+    # --resync-mode newer keeps the newer copy when a file differs on both
+    # sides; the default (path1) would let Drive overwrite newer local edits.
     if rclone bisync "$REMOTE" "$LOCAL" \
         --resync \
+        --resync-mode newer \
         --resilient \
         --conflict-resolve newer \
         --conflict-suffix "_{datestr}" \
         --max-lock "${LOCK_TIMEOUT}m" \
+        "${filter_args[@]}" \
         -v 2>&1; then
 
         echo ""
         echo "=== RESYNC COMPLETED SUCCESSFULLY ==="
         echo "Finished: $(date)"
         update_status "success" "Initial resync completed!" "100%"
+        # A good baseline clears gdrive-sync's failure count
+        echo 0 > "$STATE_DIR/consecutive_failures"
     else
         echo ""
         echo "=== RESYNC FAILED ==="
         echo "Finished with error: $(date)"
         update_status "error" "Resync failed - check log" "error"
+        exit 1
     fi
 
-} >> "$LOG_FILE" 2>&1
+} 2>&1 | tee -a "$LOG_FILE" || result=$?
+
+exit "$result"

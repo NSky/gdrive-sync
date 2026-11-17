@@ -30,7 +30,7 @@ STATE_DIR="$HOME/.local/state/gdrive-sync"
 DEFAULT_LOCAL="$HOME/gdrive"
 DEFAULT_REMOTE="gdrive:"
 
-UNITS=(gdrive-sync.timer gdrive-sync-full.timer gdrive-sync-watch.service)
+UNITS=(gdrive-sync.timer gdrive-sync-watch.service)
 
 log_info() {
     echo -e "${BLUE}[INFO]${NC} $*"

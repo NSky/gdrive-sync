@@ -97,11 +97,6 @@ Every user's services run under their own account with `systemctl --user`, using
 │  │                      gdrive-sync                             │  │
 │  │              (incremental bisync, 2min timer)                │  │
 │  └─────────────────────────────────────────────────────────────┘  │
-│                                                                    │
-│  ┌─────────────────────────────────────────────────────────────┐  │
-│  │                   gdrive-sync-full                           │  │
-│  │              (daily full resync at 3am)                      │  │
-│  └─────────────────────────────────────────────────────────────┘  │
 └────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -111,7 +106,7 @@ Every user's services run under their own account with `systemctl --user`, using
 
 2. **gdrive-sync** (every 2 minutes): Runs incremental bisync to catch remote changes and push any pending local changes. Handles conflicts, stale locks, and auto-recovery.
 
-3. **gdrive-sync-full** (daily at 3am): Performs a full `--resync` to ensure complete consistency, including any large files excluded from incremental syncs.
+3. **gdrive-sync-full** (on demand): Performs a full `--resync` to rebuild the sync baseline. Run it manually to recover from a broken state or after changing the filters. `gdrive-sync` also runs a resync on its own after repeated failures.
 
 ## Configuration
 
@@ -150,10 +145,10 @@ GDRIVE_DEBOUNCE_SEC=5
 
 ### Excluding Files
 
-Edit `~/.config/gdrive-sync/bisync-filters.txt` to exclude files from incremental syncs:
+Edit `~/.config/gdrive-sync/bisync-filters.txt` to exclude files from syncing:
 
 ```
-# Exclude large files (will only sync during daily full sync)
+# Exclude large files
 - huge-video.mp4
 - *.iso
 
@@ -165,6 +160,8 @@ Edit `~/.config/gdrive-sync/bisync-filters.txt` to exclude files from incrementa
 # Include everything else
 + **
 ```
+
+After changing the filters, run `gdrive-sync-full` once: rclone bisync needs a fresh baseline whenever the filters change.
 
 See [rclone filtering documentation](https://rclone.org/filtering/) for syntax details.
 
@@ -232,7 +229,6 @@ Example output:
 | `success` | Last sync completed successfully |
 | `running` | Sync currently in progress |
 | `error` | Last sync failed |
-| `skipped` | Skipped (another sync was running) |
 
 ## Troubleshooting
 
@@ -281,7 +277,7 @@ systemctl --user start gdrive-sync.timer gdrive-sync-watch.service
 First, each user who enabled the services disables them:
 
 ```bash
-systemctl --user disable --now gdrive-sync.timer gdrive-sync-full.timer gdrive-sync-watch.service
+systemctl --user disable --now gdrive-sync.timer gdrive-sync-watch.service
 ```
 
 Then remove the package (`sudo pacman -R nsky-gdrive-sync` on Arch, or `sudo make uninstall` from the source tree).
