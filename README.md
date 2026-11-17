@@ -95,7 +95,7 @@ Every user's services run under their own account with `systemctl --user`, using
 │                                                ▼                   │
 │  ┌─────────────────────────────────────────────────────────────┐  │
 │  │                      gdrive-sync                             │  │
-│  │              (incremental bisync, 2min timer)                │  │
+│  │              (incremental bisync, 3min timer)                │  │
 │  └─────────────────────────────────────────────────────────────┘  │
 └────────────────────────────────────────────────────────────────────┘
 ```
@@ -104,7 +104,7 @@ Every user's services run under their own account with `systemctl --user`, using
 
 1. **gdrive-sync-watch** (always running): Monitors local directory for file changes using inotifywait. When changes are detected, it triggers gdrive-sync after a 5-second debounce.
 
-2. **gdrive-sync** (every 2 minutes): Runs incremental bisync to catch remote changes and push any pending local changes. Handles conflicts, locking, and auto-recovery. Only one sync runs at a time: if a sync is already in progress, the next run is skipped.
+2. **gdrive-sync** (every 3 minutes): Runs incremental bisync to catch remote changes and push any pending local changes. Handles conflicts, locking, and auto-recovery. Only one sync runs at a time: if a sync is already in progress, the next run is skipped.
 
 3. **gdrive-sync --resync** (on demand): Performs a full resync to rebuild the sync baseline. Run it after first setup, after changing the filters, or to recover from a broken state. It waits for a running sync to finish rather than skipping. `gdrive-sync` also runs a resync on its own after repeated failures.
 
