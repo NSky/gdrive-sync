@@ -50,7 +50,7 @@ update_status() {
     local status="$1"
     local message="$2"
     local failures
-    failures=$(cat "$FAILURE_FILE" 2>/dev/null || echo 0)
+    failures=$(get_failures)
     local last_success
     last_success=$(jq -r '.last_success // "never"' "$STATUS_FILE" 2>/dev/null || echo "never")
 
@@ -58,15 +58,17 @@ update_status() {
         last_success=$(date -Iseconds)
     fi
 
-    cat > "$STATUS_FILE" <<EOF
-{
-  "status": "$status",
-  "message": "$message",
-  "consecutive_failures": $failures,
-  "last_success": "$last_success",
-  "updated_at": "$(date -Iseconds)"
-}
-EOF
+    # jq escapes the values; writing to a temp file and renaming means
+    # readers never see a half-written status file
+    jq -n \
+        --arg status "$status" \
+        --arg message "$message" \
+        --argjson failures "$failures" \
+        --arg last_success "$last_success" \
+        --arg updated_at "$(date -Iseconds)" \
+        '{status: $status, message: $message, consecutive_failures: $failures,
+          last_success: $last_success, updated_at: $updated_at}' \
+        > "$STATUS_FILE.tmp" && mv "$STATUS_FILE.tmp" "$STATUS_FILE"
 }
 
 cleanup_old_logs() {
@@ -74,7 +76,11 @@ cleanup_old_logs() {
 }
 
 get_failures() {
-    cat "$FAILURE_FILE" 2>/dev/null || echo 0
+    local n
+    n=$(cat "$FAILURE_FILE" 2>/dev/null || true)
+    # Treat a missing or corrupt counter as 0
+    [[ "$n" =~ ^[0-9]+$ ]] || n=0
+    echo "$n"
 }
 
 increment_failures() {

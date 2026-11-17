@@ -39,16 +39,17 @@ update_status() {
     local status="$1"
     local message="$2"
     local progress="${3:-}"
-    cat > "$STATUS_FILE" <<EOF
-{
-  "status": "$status",
-  "message": "$message",
-  "progress": "$progress",
-  "started_at": "${STARTED_AT:-$(date -Iseconds)}",
-  "updated_at": "$(date -Iseconds)",
-  "log_file": "$LOG_FILE"
-}
-EOF
+    # jq escapes the values; write to a temp file and rename atomically
+    jq -n \
+        --arg status "$status" \
+        --arg message "$message" \
+        --arg progress "$progress" \
+        --arg started_at "${STARTED_AT:-$(date -Iseconds)}" \
+        --arg updated_at "$(date -Iseconds)" \
+        --arg log_file "$LOG_FILE" \
+        '{status: $status, message: $message, progress: $progress,
+          started_at: $started_at, updated_at: $updated_at, log_file: $log_file}' \
+        > "$STATUS_FILE.tmp" && mv "$STATUS_FILE.tmp" "$STATUS_FILE"
 }
 
 # Wait for a running sync to finish rather than racing it. The lock is

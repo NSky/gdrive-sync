@@ -22,8 +22,11 @@ DEBOUNCE_SEC="${GDRIVE_DEBOUNCE_SEC:-5}"
 STATE_DIR="${GDRIVE_STATE_DIR:-$HOME/.local/state/gdrive-sync}"
 WATCH_LOG="$STATE_DIR/watch.log"
 
-# Lock to prevent simultaneous syncs
-LOCK_FILE="$STATE_DIR/watch-sync.lock"
+# How long to wait for events before doing housekeeping (log rotation)
+IDLE_SEC=300
+
+# Temporary files that should not trigger a sync
+EXCLUDE='(~\$|\.tmp$|\.swp$|\.partial$|\.crdownload$|__pycache__|\.git/)'
 
 # === Functions ===
 
@@ -39,40 +42,42 @@ rotate_log() {
 }
 
 trigger_sync() {
-    # Skip if sync already running
-    if [[ -f "$LOCK_FILE" ]]; then
-        local lock_pid
-        lock_pid=$(cat "$LOCK_FILE" 2>/dev/null || echo "")
-        if [[ -n "$lock_pid" ]] && kill -0 "$lock_pid" 2>/dev/null; then
-            log "Sync already in progress (PID: $lock_pid). Skipping."
-            return 0
-        else
-            log "Orphaned lock found. Removing."
-            rm -f "$LOCK_FILE"
-        fi
-    fi
-
-    # Create lock with our PID
-    echo $$ > "$LOCK_FILE"
-
+    # gdrive-sync takes the shared sync lock itself and skips if another
+    # sync (timer run or gdrive-sync-full) is already in progress.
     log "Triggering sync due to local change..."
     if "$SYNC_CMD"; then
         log "Sync from local change completed!"
     else
-        log "Sync returned error (may be normal if another sync was running)"
+        log "Sync returned an error (see gdrive-sync logs)"
     fi
-
-    rm -f "$LOCK_FILE"
 }
 
 cleanup() {
     log "Stopping gdrive-sync-watch..."
-    rm -f "$LOCK_FILE"
-    # Kill inotifywait if running
     if [[ -n "${INOTIFY_PID:-}" ]]; then
         kill "$INOTIFY_PID" 2>/dev/null || true
     fi
     exit 0
+}
+
+# inotifywait exited (watched directory removed, inotify watch limit
+# reached, ...). Exit with an error and let systemd restart us after
+# RestartSec instead of spinning.
+watcher_died() {
+    local rc=0
+    wait "$INOTIFY_PID" 2>/dev/null || rc=$?
+    log "ERROR: inotifywait stopped (exit code $rc). Exiting so systemd can restart the watcher."
+    exit 1
+}
+
+# inotifywait keeps running with no watches if the watched directory
+# itself is removed, so check for it explicitly.
+check_watch_dir() {
+    if [[ ! -d "$WATCH_DIR" ]]; then
+        log "ERROR: Watched directory disappeared: $WATCH_DIR. Exiting so systemd can restart the watcher."
+        kill "$INOTIFY_PID" 2>/dev/null || true
+        exit 1
+    fi
 }
 
 # === Main ===
@@ -92,51 +97,47 @@ fi
 
 rotate_log
 
-# Main loop: inotifywait in monitor mode
-# Recursively monitor for relevant changes
-# Exclude temporary files (Office ~$, .tmp, .swp, .partial)
-while true; do
-    # inotifywait blocks until an event is detected
-    # Timeout for periodicity and resilience
-    inotifywait \
-        -r \
-        -t 300 \
-        -e modify,create,delete,moved_to,moved_from \
-        --exclude '(~\$|\.tmp$|\.swp$|\.partial$|\.crdownload$|__pycache__|\.git/)' \
-        --format '%w%f %e %T' \
-        --timefmt '%H:%M:%S' \
-        "$WATCH_DIR" 2>/dev/null &
-    INOTIFY_PID=$!
+# One long-running inotifywait in monitor mode sets up the recursive
+# watches once and streams events on fd 3. Events that happen while a
+# sync is running are buffered and picked up afterwards.
+exec 3< <(exec inotifywait \
+    -m \
+    -r \
+    -q \
+    -e modify,create,delete,moved_to,moved_from \
+    --exclude "$EXCLUDE" \
+    --format '%w%f %e' \
+    "$WATCH_DIR")
+INOTIFY_PID=$!
 
-    # Wait for inotifywait to finish (event detected or timeout)
-    if wait "$INOTIFY_PID" 2>/dev/null; then
-        # Event detected! Apply debounce
+# read -t returns >128 on timeout and 1 on EOF (inotifywait exited)
+while true; do
+    rc=0
+    read -r -t "$IDLE_SEC" -u 3 _event || rc=$?
+
+    if [[ $rc -eq 0 ]]; then
         log "Change detected. Waiting ${DEBOUNCE_SEC}s for debounce..."
 
-        # Debounce: wait for more events for DEBOUNCE_SEC seconds
-        # If more events arrive, the timer resets
-        DEBOUNCE_REMAINING=$DEBOUNCE_SEC
-        while [[ $DEBOUNCE_REMAINING -gt 0 ]]; do
-            if inotifywait \
-                -r \
-                -t 1 \
-                -e modify,create,delete,moved_to,moved_from \
-                --exclude '(~\$|\.tmp$|\.swp$|\.partial$|\.crdownload$|__pycache__|\.git/)' \
-                "$WATCH_DIR" >/dev/null 2>&1; then
-                # More changes! Reset debounce
-                DEBOUNCE_REMAINING=$DEBOUNCE_SEC
-                log "More changes detected. Resetting debounce..."
+        # Debounce: keep waiting while events keep arriving
+        while true; do
+            rc=0
+            read -r -t "$DEBOUNCE_SEC" -u 3 _event || rc=$?
+            if [[ $rc -eq 0 ]]; then
+                continue
+            elif [[ $rc -gt 128 ]]; then
+                break
             else
-                DEBOUNCE_REMAINING=$((DEBOUNCE_REMAINING - 1))
+                watcher_died
             fi
         done
 
-        # Debounce complete, trigger sync
+        check_watch_dir
         trigger_sync
-    else
-        # Timeout (no events in 5 min) - all quiet
+    elif [[ $rc -gt 128 ]]; then
+        # No events for IDLE_SEC: all quiet
+        check_watch_dir
         rotate_log
+    else
+        watcher_died
     fi
-
-    unset INOTIFY_PID
 done
