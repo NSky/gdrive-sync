@@ -1,0 +1,156 @@
+#!/bin/bash
+# gdrive-sync-remote-watch - Watch Google Drive for changes and trigger sync
+#
+# Part of gdrive-sync
+# https://github.com/NSky/gdrive-sync
+#
+# Follows the remote's change feed (Google Drive Changes API) with
+# `rclone test changenotify`, which costs one small API request per poll
+# instead of listing the whole tree. gdrive-sync runs only when Drive
+# reports a change; the timer remains as a slower safety net.
+#
+# Note: `rclone test changenotify` is a debugging command in rclone, so
+# its output format is not guaranteed to stay the same. If it stops
+# reporting changes, the timer still keeps things in sync.
+
+set -euo pipefail
+
+# === Load Configuration ===
+CONFIG_FILE="${GDRIVE_CONFIG:-$HOME/.config/gdrive-sync/config.env}"
+if [[ -f "$CONFIG_FILE" ]]; then
+    # shellcheck source=/dev/null
+    source "$CONFIG_FILE"
+fi
+
+REMOTE="${GDRIVE_REMOTE:-gdrive:}"
+SYNC_CMD="${GDRIVE_SYNC_CMD:-$(dirname "$(readlink -f "$0")")/gdrive-sync}"
+POLL_SEC="${GDRIVE_POLL_SEC:-30}"
+DEBOUNCE_SEC="${GDRIVE_DEBOUNCE_SEC:-5}"
+MIN_INTERVAL_SEC="${GDRIVE_REMOTE_MIN_INTERVAL_SEC:-60}"
+STATE_DIR="${GDRIVE_STATE_DIR:-$HOME/.local/state/gdrive-sync}"
+WATCH_LOG="$STATE_DIR/remote-watch.log"
+
+# How long to wait for events before doing housekeeping (log rotation)
+IDLE_SEC=300
+
+# Exit code for "this remote has no change feed". The unit lists it in
+# RestartPreventExitStatus so systemd does not keep restarting us.
+EX_UNSUPPORTED=78
+
+# === Functions ===
+
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [REMOTE] $*" | tee -a "$WATCH_LOG"
+}
+
+rotate_log() {
+    if [[ -f "$WATCH_LOG" ]] && [[ $(stat -c%s "$WATCH_LOG" 2>/dev/null || echo 0) -gt 1048576 ]]; then
+        mv "$WATCH_LOG" "$WATCH_LOG.old"
+        log "Log rotated"
+    fi
+}
+
+trigger_sync() {
+    # gdrive-sync takes the shared sync lock itself and skips if another
+    # sync (timer, local watcher or a resync) is already in progress.
+    LAST_SYNC=$SECONDS
+    log "Triggering sync due to remote change..."
+    if "$SYNC_CMD"; then
+        log "Sync from remote change completed!"
+    else
+        log "Sync returned an error (see gdrive-sync logs)"
+    fi
+}
+
+cleanup() {
+    log "Stopping gdrive-sync-remote-watch..."
+    if [[ -n "${RCLONE_PID:-}" ]]; then
+        kill "$RCLONE_PID" 2>/dev/null || true
+    fi
+    exit 0
+}
+
+# rclone exited. If the remote has no change feed, stop for good;
+# otherwise exit with an error and let systemd restart us.
+watcher_died() {
+    local rc=0
+    wait "$RCLONE_PID" 2>/dev/null || rc=$?
+    if [[ $UNSUPPORTED -eq 1 ]]; then
+        log "ERROR: Remote $REMOTE does not support change notifications. Remote changes are picked up by gdrive-sync.timer only."
+        exit "$EX_UNSUPPORTED"
+    fi
+    log "ERROR: rclone changenotify stopped (exit code $rc). Exiting so systemd can restart the watcher."
+    exit 1
+}
+
+# Read one line from rclone into LINE, waiting at most $1 seconds.
+# Returns 0 for a change event, 2 for any other line (already logged),
+# >128 on timeout. Calls watcher_died on EOF.
+read_event() {
+    local rc=0
+    read -r -t "$1" -u 3 LINE || rc=$?
+    if [[ $rc -gt 128 ]]; then
+        return $rc
+    elif [[ $rc -ne 0 ]]; then
+        watcher_died
+    fi
+
+    # Change events look like:  <date> <time> NOTICE: "path/to/file": file
+    if [[ "$LINE" =~ NOTICE:\ \"(.*)\":\ (file|directory)$ ]]; then
+        CHANGED_PATH="${BASH_REMATCH[1]}"
+        return 0
+    fi
+
+    [[ "$LINE" == *"not supported"* ]] && UNSUPPORTED=1
+    [[ "$LINE" == *"Waiting for changes"* ]] || log "rclone: $LINE"
+    return 2
+}
+
+# === Main ===
+
+mkdir -p "$STATE_DIR"
+
+trap cleanup SIGTERM SIGINT SIGHUP
+
+log "Starting remote watcher on: $REMOTE"
+log "Poll interval: ${POLL_SEC}s, debounce: ${DEBOUNCE_SEC}s, minimum time between syncs: ${MIN_INTERVAL_SEC}s"
+
+rotate_log
+
+UNSUPPORTED=0
+LAST_SYNC=-$MIN_INTERVAL_SEC
+LINE=""
+CHANGED_PATH=""
+
+exec 3< <(exec rclone test changenotify "$REMOTE" --poll-interval "${POLL_SEC}s" 2>&1)
+RCLONE_PID=$!
+
+while true; do
+    rc=0
+    read_event "$IDLE_SEC" || rc=$?
+
+    if [[ $rc -eq 0 ]]; then
+        log "Remote change detected: $CHANGED_PATH"
+
+        # Debounce: keep collecting events until DEBOUNCE_SEC pass with
+        # no new ones, and at least MIN_INTERVAL_SEC since the last sync.
+        # This keeps a document being edited in the browser (a change on
+        # every poll) from causing a full sync on every poll.
+        while true; do
+            wait_sec=$DEBOUNCE_SEC
+            until_allowed=$(( LAST_SYNC + MIN_INTERVAL_SEC - SECONDS ))
+            (( until_allowed > wait_sec )) && wait_sec=$until_allowed
+
+            rc=0
+            read_event "$wait_sec" || rc=$?
+            if [[ $rc -gt 128 ]]; then
+                break
+            fi
+        done
+
+        trigger_sync
+    elif [[ $rc -gt 128 ]]; then
+        # No events for IDLE_SEC: all quiet
+        rotate_log
+    fi
+done

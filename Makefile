@@ -14,7 +14,8 @@ USERUNITDIR  ?= $(PREFIX)/lib/systemd/user
 
 INSTALL      ?= install
 
-SCRIPTS = bin/gdrive-sync bin/gdrive-sync-watch bin/gdrive-sync-setup
+SCRIPTS = bin/gdrive-sync bin/gdrive-sync-watch bin/gdrive-sync-remote-watch \
+          bin/gdrive-sync-setup
 UNITS   = $(wildcard systemd/*.service systemd/*.timer)
 
 .PHONY: all install uninstall check

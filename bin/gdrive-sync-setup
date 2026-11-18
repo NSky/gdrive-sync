@@ -30,7 +30,7 @@ STATE_DIR="$HOME/.local/state/gdrive-sync"
 DEFAULT_LOCAL="$HOME/gdrive"
 DEFAULT_REMOTE="gdrive:"
 
-UNITS=(gdrive-sync.timer gdrive-sync-watch.service)
+UNITS=(gdrive-sync.timer gdrive-sync-watch.service gdrive-sync-remote-watch.service)
 
 log_info() {
     echo -e "${BLUE}[INFO]${NC} $*"
@@ -202,8 +202,14 @@ GDRIVE_MAX_FAILURES=6
 # Lock timeout in minutes
 GDRIVE_LOCK_TIMEOUT=10
 
-# Debounce delay in seconds for the file watcher
+# Debounce delay in seconds for the file watchers
 GDRIVE_DEBOUNCE_SEC=5
+
+# How often the remote watcher asks Google Drive for changes (seconds)
+GDRIVE_POLL_SEC=30
+
+# Minimum time between syncs triggered by remote changes (seconds)
+GDRIVE_REMOTE_MIN_INTERVAL_SEC=60
 EOF
 
     log_success "Configuration saved to $CONFIG_FILE"
@@ -362,6 +368,7 @@ main() {
     echo "  gdrive-sync                 - Manual sync"
     echo "  gdrive-sync --resync        - Full resync (recovery)"
     echo "  systemctl --user status gdrive-sync-watch.service"
+    echo "  systemctl --user status gdrive-sync-remote-watch.service"
     echo "  cat $STATE_DIR/status.json  - Check sync status"
     echo ""
     echo "Logs:   $STATE_DIR/logs/"

@@ -1,8 +1,8 @@
 # gdrive-sync
 
-**Bidirectional Google Drive sync for Linux with real-time local file watching.**
+**Bidirectional Google Drive sync for Linux with real-time watching of local and remote changes.**
 
-A complete solution for keeping a local directory in sync with Google Drive using [rclone's bisync](https://rclone.org/bisync/). Features automatic conflict resolution, real-time monitoring of local changes, and robust error recovery.
+A complete solution for keeping a local directory in sync with Google Drive using [rclone's bisync](https://rclone.org/bisync/). Features automatic conflict resolution, real-time monitoring of local and Drive changes, and robust error recovery.
 
 > **Note:** This project is based on the [namastexlabs/linux-gdrive-sync](https://github.com/namastexlabs/linux-gdrive-sync) repository.
 
@@ -10,7 +10,8 @@ A complete solution for keeping a local directory in sync with Google Drive usin
 
 - **Bidirectional sync**: Changes flow both ways - local to Drive, and Drive to local
 - **Real-time local watching**: Uses `inotifywait` to detect and sync local changes immediately
-- **Periodic remote polling**: Timer-based polling catches changes made on Google Drive
+- **Real-time remote watching**: Follows Google Drive's change feed and syncs only when something changed on Drive
+- **Safety-net timer**: A slower periodic sync catches anything the watchers missed
 - **Smart conflict resolution**: Newest file wins, with dated backup of conflicts
 - **Auto-recovery**: Automatic full resync after consecutive failures
 - **Stale lock detection**: Automatically cleans up locks from crashed processes
@@ -78,24 +79,22 @@ Every user's services run under their own account with `systemctl --user`, using
                     ┌─────────────────────────────────────────────┐
                     │                Google Drive                  │
                     └─────────────────────────────────────────────┘
-                                         ▲
-                                         │
-                              rclone bisync
-                                         │
-                                         ▼
+                          ▲                          │
+                          │ rclone bisync            │ change feed
+                          │                          ▼
 ┌───────────────────────────────────────────────────────────────────┐
 │                         Your Linux Machine                         │
 │                                                                     │
-│  ┌─────────────────┐   detects    ┌────────────────────────────┐  │
-│  │ Local Directory │◄────────────►│     gdrive-sync-watch      │  │
-│  │   ~/gdrive      │   changes    │  (inotifywait daemon)      │  │
-│  └─────────────────┘              └────────────┬───────────────┘  │
-│                                                │                   │
-│                                     triggers   │                   │
-│                                                ▼                   │
+│  ┌─────────────────┐  ┌────────────────────┐  ┌─────────────────┐  │
+│  │ gdrive-sync-    │  │ gdrive-sync.timer  │  │ gdrive-sync-    │  │
+│  │ watch           │  │ (every 15 min,     │  │ remote-watch    │  │
+│  │ (inotifywait on │  │  safety net)       │  │ (rclone change- │  │
+│  │  ~/gdrive)      │  │                    │  │  notify)        │  │
+│  └────────┬────────┘  └─────────┬──────────┘  └────────┬────────┘  │
+│           │ triggers            │ triggers             │ triggers  │
+│           ▼                     ▼                      ▼           │
 │  ┌─────────────────────────────────────────────────────────────┐  │
-│  │                      gdrive-sync                             │  │
-│  │              (incremental bisync, 3min timer)                │  │
+│  │                gdrive-sync (incremental bisync)              │  │
 │  └─────────────────────────────────────────────────────────────┘  │
 └────────────────────────────────────────────────────────────────────┘
 ```
@@ -104,18 +103,20 @@ Every user's services run under their own account with `systemctl --user`, using
 
 1. **gdrive-sync-watch** (always running): Monitors local directory for file changes using inotifywait. When changes are detected, it triggers gdrive-sync after a 5-second debounce.
 
-2. **gdrive-sync** (every 3 minutes): Runs incremental bisync to catch remote changes and push any pending local changes. Handles conflicts, locking, and auto-recovery. Only one sync runs at a time: if a sync is already in progress, the next run is skipped.
+2. **gdrive-sync-remote-watch** (always running): Follows Google Drive's change feed with `rclone test changenotify`, asking Drive for changes every 30 seconds. Each check is a single small API request instead of a listing of the whole tree. When Drive reports a change, it triggers gdrive-sync after a short debounce, and at most once a minute while changes keep arriving (for example, while someone edits a document in the browser).
 
-3. **gdrive-sync --resync** (on demand): Performs a full resync to rebuild the sync baseline. Run it after first setup, after changing the filters, or to recover from a broken state. It waits for a running sync to finish rather than skipping. `gdrive-sync` also runs a resync on its own after repeated failures.
+3. **gdrive-sync** (on a trigger, and every 15 minutes as a safety net): Runs incremental bisync to catch remote changes and push any pending local changes. Handles conflicts, locking, and auto-recovery. Only one sync runs at a time: if a sync is already in progress, the next run is skipped.
+
+4. **gdrive-sync --resync** (on demand): Performs a full resync to rebuild the sync baseline. Run it after first setup, after changing the filters, or to recover from a broken state. It waits for a running sync to finish rather than skipping. `gdrive-sync` also runs a resync on its own after repeated failures.
 
 ## Configuration
 
 Configuration is stored in `~/.config/gdrive-sync/config.env`. `gdrive-sync-setup` creates it for you; to configure manually, create the file yourself. Every setting is optional — anything left out uses the default shown below. The scripts read a different file if you set `GDRIVE_CONFIG=/path/to/config.env`.
 
-After changing the configuration, restart the watcher so it picks up the new values:
+After changing the configuration, restart the watchers so they pick up the new values:
 
 ```bash
-systemctl --user restart gdrive-sync-watch.service
+systemctl --user restart gdrive-sync-watch.service gdrive-sync-remote-watch.service
 ```
 
 Settings and their defaults:
@@ -139,8 +140,29 @@ GDRIVE_MAX_FAILURES=6
 # Lock timeout (minutes); stale locks older than this are removed
 GDRIVE_LOCK_TIMEOUT=10
 
-# Debounce delay (seconds)
+# Debounce delay for both watchers (seconds)
 GDRIVE_DEBOUNCE_SEC=5
+
+# How often the remote watcher asks Google Drive for changes (seconds)
+GDRIVE_POLL_SEC=30
+
+# Minimum time between syncs triggered by remote changes (seconds)
+GDRIVE_REMOTE_MIN_INTERVAL_SEC=60
+```
+
+### Remote Change Watching
+
+`gdrive-sync-remote-watch` relies on `rclone test changenotify`. Google Drive supports it, but not every rclone backend does: on a remote without a change feed the watcher logs an error and stops, and remote changes are picked up by the 15-minute timer only. `rclone test` is meant for debugging, so a future rclone release could change its output; the timer keeps your files in sync if that happens.
+
+Uploads made by gdrive-sync itself also show up in Drive's change feed, so a local change is usually followed by one extra sync that finds nothing to do.
+
+To check remote changes more or less often than every 15 minutes without the watcher, override the timer:
+
+```bash
+systemctl --user edit gdrive-sync.timer
+# [Timer]
+# OnUnitActiveSec=
+# OnUnitActiveSec=5min
 ```
 
 ### Excluding Files
@@ -189,18 +211,20 @@ ls -la ~/.local/state/gdrive-sync/logs/
 # Check service status
 systemctl --user status gdrive-sync.timer
 systemctl --user status gdrive-sync-watch.service
+systemctl --user status gdrive-sync-remote-watch.service
 
 # View service logs
 journalctl --user -u gdrive-sync.service -f
 journalctl --user -u gdrive-sync-watch.service -f
+journalctl --user -u gdrive-sync-remote-watch.service -f
 
 # Restart services
 systemctl --user restart gdrive-sync.timer
-systemctl --user restart gdrive-sync-watch.service
+systemctl --user restart gdrive-sync-watch.service gdrive-sync-remote-watch.service
 
 # Temporarily disable sync
 systemctl --user stop gdrive-sync.timer
-systemctl --user stop gdrive-sync-watch.service
+systemctl --user stop gdrive-sync-watch.service gdrive-sync-remote-watch.service
 ```
 
 ## Status Monitoring
@@ -267,7 +291,7 @@ rm -f ~/.cache/rclone/bisync/*.lck
 To reset everything and re-establish the sync baseline:
 ```bash
 # Stop services
-systemctl --user stop gdrive-sync.timer gdrive-sync-watch.service
+systemctl --user stop gdrive-sync.timer gdrive-sync-watch.service gdrive-sync-remote-watch.service
 
 # Clear rclone bisync state
 rm -rf ~/.cache/rclone/bisync/
@@ -276,7 +300,7 @@ rm -rf ~/.cache/rclone/bisync/
 gdrive-sync --resync
 
 # Restart services
-systemctl --user start gdrive-sync.timer gdrive-sync-watch.service
+systemctl --user start gdrive-sync.timer gdrive-sync-watch.service gdrive-sync-remote-watch.service
 ```
 
 ## Uninstall
@@ -284,7 +308,7 @@ systemctl --user start gdrive-sync.timer gdrive-sync-watch.service
 First, each user who enabled the services disables them:
 
 ```bash
-systemctl --user disable --now gdrive-sync.timer gdrive-sync-watch.service
+systemctl --user disable --now gdrive-sync.timer gdrive-sync-watch.service gdrive-sync-remote-watch.service
 ```
 
 Then remove the package (`sudo pacman -R nsky-gdrive-sync` on Arch, or `sudo make uninstall` from the source tree).

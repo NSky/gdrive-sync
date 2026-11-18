@@ -1,0 +1,15 @@
+[Unit]
+Description=Watch Google Drive for changes (real-time Google Drive sync)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/gdrive-sync-remote-watch
+Restart=always
+RestartSec=30
+# 78: the remote has no change feed; the timer covers remote changes
+RestartPreventExitStatus=78
+
+[Install]
+WantedBy=default.target

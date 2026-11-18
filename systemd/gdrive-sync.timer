@@ -1,9 +1,9 @@
 [Unit]
-Description=Timer for Google Drive incremental bisync (every 3 min)
+Description=Timer for Google Drive incremental bisync (every 15 min, safety net for the watchers)
 
 [Timer]
 OnBootSec=3min
-OnUnitActiveSec=3min
+OnUnitActiveSec=15min
 RandomizedDelaySec=30
 Persistent=true
 
